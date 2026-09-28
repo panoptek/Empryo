@@ -366,6 +366,7 @@ function getModelCapabilities(modelId: string): ModelCapabilities {
   };
 }
 
+/** Select native SDK capabilities for built-ins and custom wire APIs. */
 function getProviderConstraints(providerId: string): ProviderConstraints {
   if (!providerId) return NO_SUPPORT;
 

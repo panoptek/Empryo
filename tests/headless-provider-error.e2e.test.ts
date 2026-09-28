@@ -1,10 +1,11 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("headless CLI reports provider stream errors and exits nonzero", async () => {
-	const root = mkdtempSync("/tmp/opencode/pr223-headless-error-");
+	const root = mkdtempSync(join(tmpdir(), "headless-provider-error-"));
 	const home = join(root, "home");
 	const project = join(root, "project");
 	const paths: string[] = [];

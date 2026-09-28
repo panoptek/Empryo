@@ -278,6 +278,7 @@ interface TurnResult {
   exitCode: number;
 }
 
+/** Stream one headless turn, including provider errors that arrive as stream parts. */
 async function streamTurn(
   agent: ReturnType<typeof createForgeAgent>,
   messages: ModelMessage[],

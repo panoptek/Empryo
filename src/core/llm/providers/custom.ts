@@ -56,7 +56,7 @@ function normalizeBaseURLPath(baseURL: string): string {
  *   1. Explicit `modelsAPI` from config — user-configured endpoint, used as-is.
  *   2. Native APIs append `/models` to `baseURL`; the legacy OpenAI-compatible
  *      route strips trailing `/v1` first to preserve existing configurations.
- *      Returns null only when `baseURL` itself is absent (should not happen in practice).
+ * Returns null when automatic discovery is disabled with `modelsAPI: false`.
  */
 function resolveModelsAPIUrl(config: CustomProviderConfig): string | null {
   if (config.modelsAPI === false) return null;
@@ -68,11 +68,13 @@ function resolveModelsAPIUrl(config: CustomProviderConfig): string | null {
   return `${normalized}/models`;
 }
 
+/** Convert configured model IDs to the metadata shape used by discovery fallback. */
 function normalizeModels(models?: (string | ProviderModelInfo)[]): ProviderModelInfo[] {
   if (!models || models.length === 0) return [];
   return models.map((m) => (typeof m === "string" ? { id: m, name: m } : m));
 }
 
+/** Build OpenAI-compatible body parameters without affecting native wire APIs. */
 function buildReasoningBody(reasoning?: CustomReasoningConfig): Record<string, unknown> {
   if (!reasoning) return {};
   return buildOpenAICompatReasoningBody(reasoning.effort, {
@@ -84,6 +86,7 @@ function buildReasoningBody(reasoning?: CustomReasoningConfig): Record<string, u
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+/** Keep configured keys and headers off plaintext networks outside loopback. */
 function permitsCredentials(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -96,6 +99,7 @@ function permitsCredentials(url: string): boolean {
   }
 }
 
+/** Reject redirects before they can forward custom credentials to another endpoint. */
 const fetchWithoutRedirects: ReasoningFetchFn = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   if (!permitsCredentials(url)) {
@@ -134,6 +138,7 @@ function withMaxCompletionTokens(baseFetch: ReasoningFetchFn = fetch): Reasoning
   };
 }
 
+/** Build a selectable provider with protocol-specific requests and model discovery. */
 export function buildCustomProvider(config: CustomProviderConfig): ProviderDefinition {
   const envVar = config.envVar ?? "";
   const api = config.api ?? "openai-compatible";
