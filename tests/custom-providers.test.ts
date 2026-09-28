@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, mock, afterEach } from "bun:test";
 import { registerCustomProviders, getAllProviders, getProvider, buildCustomProvider } from "../src/core/llm/providers/index.js";
 import type { CustomProviderConfig, ProviderDefinition } from "../src/core/llm/providers/types.js";
-import { PROVIDER_CONFIGS } from "../src/core/llm/models.js";
+import { PROVIDER_CONFIGS, fetchProviderModels } from "../src/core/llm/models.js";
 
 // Reset provider state between tests by re-registering empty
 beforeEach(() => {
@@ -1142,12 +1142,24 @@ describe("custom provider wire API", () => {
 					path,
 					auth: req.headers.get("authorization"),
 					xApiKey: req.headers.get("x-api-key"),
-					body: (await req.json()) as Record<string, unknown>,
+					body: req.method === "POST" ? (await req.json()) as Record<string, unknown> : {},
 				});
+				if (path === "/v1/models") {
+					return Response.json({ data: [{ id: "claude-opus-4-8", max_input_tokens: 200_000 }] });
+				}
+				if (req.method === "GET") return new Response("Not found", { status: 404 });
 				if (path.endsWith("/messages")) {
 					return Response.json({
 						id: "m", type: "message", role: "assistant", model: "x",
 						content: [{ type: "text", text: "ok" }], stop_reason: "end_turn",
+						usage: { input_tokens: 1, output_tokens: 1 },
+					});
+				}
+				if (path.endsWith("/responses")) {
+					return Response.json({
+						id: "r", created_at: 1, model: "gpt-5",
+						output: [{ type: "message", role: "assistant", id: "msg-1",
+							content: [{ type: "output_text", text: "ok", annotations: [] }] }],
 						usage: { input_tokens: 1, output_tokens: 1 },
 					});
 				}
@@ -1229,6 +1241,16 @@ describe("custom provider wire API", () => {
 		expect(got[1]).toEqual({ auth: "Bearer sk-wire", xApiKey: null, version: "2023-06-01" });
 	});
 
+	test.each(["anthropic", "openai-responses"] as const)(
+		"%s models are discoverable through the provider registry",
+		async (api) => {
+			registerCustomProviders([{ id: `wire-${api}`, baseURL, envVar: "WIRE_TEST_KEY", api }]);
+			const { models } = await fetchProviderModels(`wire-${api}`);
+			expect(seen.map((req) => req.path)).toEqual(["/v1/models"]);
+			expect(models).toEqual([{ id: "claude-opus-4-8", name: "claude-opus-4-8", contextWindow: 200_000 }]);
+		},
+	);
+
 	test("api: anthropic with authHeader bearer", async () => {
 		const req = await call({ api: "anthropic", authHeader: "bearer" }, "claude-opus-4-8");
 		expect(req.auth).toBe("Bearer sk-wire");
@@ -1236,7 +1258,10 @@ describe("custom provider wire API", () => {
 	});
 
 	test("api: openai-responses posts to /responses", async () => {
-		await call({ api: "openai-responses" }, "gpt-5").catch(() => {});
+		const { generateText } = await import("ai");
+		const def = buildCustomProvider({ id: "wire", baseURL, envVar: "WIRE_TEST_KEY", api: "openai-responses" });
+		const result = await generateText({ model: def.createModel("gpt-5"), prompt: "hi", maxOutputTokens: 64, maxRetries: 0 });
+		expect(result.text).toBe("ok");
 		expect(seen[0]!.path).toBe("/v1/responses");
 		expect(seen[0]!.body.max_output_tokens).toBe(64);
 	});

@@ -1,10 +1,10 @@
 ---
 title: "Custom providers"
-description: "Connect any OpenAI-compatible API with one block of config."
+description: "Connect OpenAI-compatible, Anthropic Messages, or OpenAI Responses APIs with one block of config."
 icon: "plug-circle-plus"
 ---
 
-Add any OpenAI-compatible API as a provider. No code, no plugin.
+Add an OpenAI-compatible, Anthropic Messages, or OpenAI Responses API as a provider. No code, no plugin.
 
 ## Minimal example
 
@@ -36,11 +36,11 @@ soulforge --model together/meta-llama/Llama-3-70b-chat-hf
 | Field | Required | What it does |
 |-------|----------|--------------|
 | `id` | yes | Used in model strings (`together/llama-3`) |
-| `baseURL` | yes | OpenAI-compatible endpoint |
+| `baseURL` | yes | API endpoint prefix (for example, `https://api.example.com/v1`) |
 | `name` | — | Display name |
 | `envVar` | — | Env var for the key (omit for auth-less servers) |
 | `models` | — | Fallback model list (strings or `{id, name, contextWindow}`) |
-| `modelsAPI` | — | URL returning OpenAI `/v1/models` format |
+| `modelsAPI` | — | Override the model-list URL; set to `false` if unavailable. Native APIs default to `{baseURL}/models`; OpenAI-compatible keeps its legacy `/models` default |
 | `reasoning` | — | Thinking/reasoning config (see below) |
 | `api` | — | Wire API: `"openai-compatible"` (default, `/chat/completions`), `"anthropic"` (`/messages`), `"openai-responses"` (`/responses`) |
 | `maxTokensParam` | — | `"auto"` (default), `"max_tokens"` or `"max_completion_tokens"`. Auto sends `max_completion_tokens` for o1/o3/o4/gpt-5 models |
@@ -78,8 +78,9 @@ soulforge --model together/meta-llama/Llama-3-70b-chat-hf
 </Accordion>
 
 <Accordion title="Anthropic-compatible endpoint">
-  Any server that implements the Anthropic Messages API (`POST {baseURL}/messages`) works with
-  `api: "anthropic"`. Requests carry Anthropic prompt-caching breakpoints and native thinking/effort options.
+  Use `api: "anthropic"` for servers that implement the Anthropic Messages API
+  (`POST {baseURL}/messages`). Requests carry Anthropic prompt-caching breakpoints and native thinking/effort options.
+  Model discovery uses `GET {baseURL}/models`; add `models` as a fallback when the server does not provide it.
 
   ```json
   {
@@ -88,7 +89,8 @@ soulforge --model together/meta-llama/Llama-3-70b-chat-hf
       "name": "My Anthropic-compatible API",
       "baseURL": "https://api.example.com/v1",
       "envVar": "MY_API_KEY",
-      "api": "anthropic"
+      "api": "anthropic",
+      "models": ["claude-sonnet-4-5-20250929"]
     }]
   }
   ```

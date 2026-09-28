@@ -18,6 +18,8 @@ import type {
 interface OpenAIModelListEntry {
   id: string;
   owned_by?: string;
+  /** Anthropic `/v1/models` returns the input context window here. */
+  max_input_tokens?: number;
   /** OpenRouter returns top-level `context_length`. */
   context_length?: number;
   /** LM Studio `/api/v0/models` returns `max_context_length`. */
@@ -48,18 +50,21 @@ function normalizeBaseURLPath(baseURL: string): string {
 }
 
 /**
- * Build the models-api endpoint for an OpenAI-compatible custom provider.
+ * Build the models-api endpoint for a custom provider.
  *
  * Resolution order:
  *   1. Explicit `modelsAPI` from config — user-configured endpoint, used as-is.
- *   2. Auto-constructed URL derived from `baseURL` — strip trailing `/v1`, append `/models`.
- *      This enables zero-config model discovery for standard OpenAI-compatible servers.
+ *   2. Native APIs append `/models` to `baseURL`; the legacy OpenAI-compatible
+ *      route strips trailing `/v1` first to preserve existing configurations.
  *      Returns null only when `baseURL` itself is absent (should not happen in practice).
  */
 function resolveModelsAPIUrl(config: CustomProviderConfig): string | null {
   if (config.modelsAPI === false) return null;
   if (config.modelsAPI) return config.modelsAPI;
-  const normalized = normalizeBaseURLPath(config.baseURL);
+  const normalized =
+    config.api && config.api !== "openai-compatible"
+      ? config.baseURL.replace(/\/+$/, "")
+      : normalizeBaseURLPath(config.baseURL);
   return `${normalized}/models`;
 }
 
@@ -200,6 +205,7 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
       return parsed.data.map((m) => {
         const rawContext =
           m.context_length ??
+          m.max_input_tokens ??
           m.max_context_length ??
           m.model_info?.max_input_tokens ??
           m.meta?.n_ctx_train;
