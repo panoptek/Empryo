@@ -82,6 +82,28 @@ function buildReasoningBody(reasoning?: CustomReasoningConfig): Record<string, u
   });
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function permitsCredentials(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" ||
+      (parsed.protocol === "http:" && LOOPBACK_HOSTS.has(parsed.hostname))
+    );
+  } catch {
+    return false;
+  }
+}
+
+const fetchWithoutRedirects: ReasoningFetchFn = (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (!permitsCredentials(url)) {
+    throw new Error("Custom provider keys and headers require HTTPS or loopback HTTP");
+  }
+  return fetch(input, { ...init, redirect: "error" });
+};
+
 const OPENAI_REASONING_MODEL = /^(o\d|gpt-5)/i;
 
 /** Resolve which output-token field a chat/completions request should carry. */
@@ -131,8 +153,17 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
     customAPI: api,
 
     createModel(modelId: string) {
-      const apiKey = envVar ? (getProviderApiKey(envVar) ?? "") : "custom";
+      const configuredKey = envVar ? getProviderApiKey(envVar) : undefined;
+      if (envVar && !configuredKey) {
+        throw new Error(`Missing API key for custom provider "${config.id}" (${envVar})`);
+      }
+      const apiKey = configuredKey ?? "custom";
       const headers = config.headers;
+      const protectedHeaders = Boolean(envVar || Object.keys(headers ?? {}).length);
+      if (protectedHeaders && !permitsCredentials(config.baseURL)) {
+        throw new Error("Custom provider keys and headers require HTTPS or loopback HTTP");
+      }
+      const baseFetch = protectedHeaders ? fetchWithoutRedirects : fetch;
 
       if (api === "anthropic") {
         const auth = config.authHeader === "bearer" ? { authToken: apiKey } : { apiKey };
@@ -140,7 +171,7 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
           baseURL: config.baseURL,
           ...auth,
           headers,
-          fetch: createSessionFetchWrapper(reasoningBody) as typeof fetch,
+          fetch: createSessionFetchWrapper(reasoningBody, baseFetch) as typeof fetch,
         })(modelId);
       }
 
@@ -149,7 +180,7 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
           baseURL: config.baseURL,
           apiKey,
           headers,
-          fetch: createSessionFetchWrapper(reasoningBody) as typeof fetch,
+          fetch: createSessionFetchWrapper(reasoningBody, baseFetch) as typeof fetch,
         }).responses(modelId);
       }
 
@@ -162,7 +193,7 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
         headers,
         fetch: createSessionFetchWrapper(
           reasoningBody,
-          renameMaxTokens ? withMaxCompletionTokens() : fetch,
+          renameMaxTokens ? withMaxCompletionTokens(baseFetch) : baseFetch,
         ) as typeof fetch,
       });
       return client.chatModel(modelId);
@@ -173,6 +204,8 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
       if (!modelsUrl) return null;
 
       const apiKey = envVar ? (getProviderApiKey(envVar) ?? "") : "";
+      const protectedHeaders = Boolean(apiKey || Object.keys(config.headers ?? {}).length);
+      if (protectedHeaders && !permitsCredentials(modelsUrl)) return null;
       const headers: Record<string, string> = {
         ...config.headers,
         "Content-Type": "application/json",
@@ -187,6 +220,7 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
       try {
         res = await fetch(modelsUrl, {
           headers,
+          ...(protectedHeaders ? { redirect: "error" } : {}),
           signal: AbortSignal.timeout(2000),
         });
       } catch {

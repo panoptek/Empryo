@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, mock, afterEach } from "bun:test";
 import { registerCustomProviders, getAllProviders, getProvider, buildCustomProvider } from "../src/core/llm/providers/index.js";
 import type { CustomProviderConfig, ProviderDefinition } from "../src/core/llm/providers/types.js";
 import { PROVIDER_CONFIGS, fetchProviderModels } from "../src/core/llm/models.js";
+import { resolveModel } from "../src/core/llm/provider.js";
 
 // Reset provider state between tests by re-registering empty
 beforeEach(() => {
@@ -1250,6 +1251,106 @@ describe("custom provider wire API", () => {
 			expect(models).toEqual([{ id: "claude-opus-4-8", name: "claude-opus-4-8", contextWindow: 200_000 }]);
 		},
 	);
+
+	test.each(["anthropic", "openai-responses", "openai-compatible"] as const)(
+		"%s refuses a key over non-loopback HTTP for discovery and generation",
+		async (api) => {
+			const id = `wire-insecure-${api}`;
+			registerCustomProviders([{
+				id, api, baseURL: `http://0.0.0.0:${server.port}/v1`,
+				envVar: "WIRE_TEST_KEY", models: ["claude-opus-4-8"],
+			}]);
+			expect((await fetchProviderModels(id)).models).toEqual([{ id: "claude-opus-4-8", name: "claude-opus-4-8" }]);
+			expect(() => resolveModel(`${id}/claude-opus-4-8`)).toThrow(/HTTPS|loopback/);
+			expect(seen).toEqual([]);
+		},
+	);
+
+	test("explicit modelsAPI cannot send a key over non-loopback HTTP", async () => {
+		const def = buildCustomProvider({
+			id: "wire-explicit", api: "anthropic", baseURL: "https://api.example.com/v1",
+			envVar: "WIRE_TEST_KEY", modelsAPI: `http://0.0.0.0:${server.port}/v1/models`,
+		});
+		expect(await def.fetchModels()).toBeNull();
+		expect(seen).toEqual([]);
+	});
+
+	test("custom headers cannot be sent over non-loopback HTTP", async () => {
+		const def = buildCustomProvider({
+			id: "wire-header", api: "anthropic", baseURL: `http://0.0.0.0:${server.port}/v1`,
+			headers: { "x-organization-secret": "synthetic-not-secret" },
+		});
+		expect(await def.fetchModels()).toBeNull();
+		expect(() => def.createModel("claude-opus-4-8")).toThrow(/HTTPS|loopback/);
+		expect(seen).toEqual([]);
+	});
+
+	test("a missing custom key never falls back to an SDK key", () => {
+		const previous = process.env.ANTHROPIC_API_KEY;
+		delete process.env.WIRE_TEST_KEY;
+		process.env.ANTHROPIC_API_KEY = "synthetic-sdk-key";
+		try {
+			const def = buildCustomProvider({
+				id: "wire-missing-key", api: "anthropic", authHeader: "bearer",
+				baseURL: `http://0.0.0.0:${server.port}/v1`, envVar: "WIRE_TEST_KEY",
+			});
+			expect(() => def.createModel("claude-opus-4-8")).toThrow(/WIRE_TEST_KEY/);
+			expect(seen).toEqual([]);
+		} finally {
+			process.env.WIRE_TEST_KEY = "sk-wire";
+			if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+			else process.env.ANTHROPIC_API_KEY = previous;
+		}
+	});
+
+	test("HTTP without keys or custom headers remains available", async () => {
+		const originalFetch = globalThis.fetch;
+		const paths: string[] = [];
+		globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+			const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+			paths.push(path);
+			if (path === "/v1/models") return Response.json({ data: [{ id: "claude-opus-4-8" }] });
+			return Response.json({
+				id: "m", type: "message", role: "assistant", model: "claude-opus-4-8",
+				content: [{ type: "text", text: "ok" }], stop_reason: "end_turn",
+				usage: { input_tokens: 1, output_tokens: 1 },
+			});
+		}) as typeof fetch;
+		try {
+			const def = buildCustomProvider({
+				id: "wire-public", api: "anthropic", baseURL: "http://192.0.2.1/v1",
+			});
+			expect(await def.fetchModels()).toEqual([{ id: "claude-opus-4-8", name: "claude-opus-4-8" }]);
+			const { generateText } = await import("ai");
+			expect((await generateText({ model: def.createModel("claude-opus-4-8"), prompt: "hi", maxRetries: 0 })).text).toBe("ok");
+			expect(paths).toEqual(["/v1/models", "/v1/messages"]);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	test("keyed discovery and generation do not follow HTTP redirects", async () => {
+		const requests: string[] = [];
+		const redirectServer = Bun.serve({
+			port: 0,
+			fetch(req) {
+				requests.push(new URL(req.url).pathname);
+				return new Response(null, { status: 307, headers: { Location: "/leak" } });
+			},
+		});
+		try {
+			const def = buildCustomProvider({
+				id: "wire-redirect", api: "anthropic",
+				baseURL: `http://localhost:${redirectServer.port}/v1`, envVar: "WIRE_TEST_KEY",
+			});
+			expect(await def.fetchModels()).toBeNull();
+			const { generateText } = await import("ai");
+			await expect(generateText({ model: def.createModel("claude-opus-4-8"), prompt: "hi", maxRetries: 0 })).rejects.toThrow();
+			expect(requests).toEqual(["/v1/models", "/v1/messages"]);
+		} finally {
+			redirectServer.stop(true);
+		}
+	});
 
 	test("api: anthropic with authHeader bearer", async () => {
 		const req = await call({ api: "anthropic", authHeader: "bearer" }, "claude-opus-4-8");

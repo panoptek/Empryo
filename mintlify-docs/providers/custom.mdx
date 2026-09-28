@@ -47,6 +47,8 @@ soulforge --model together/meta-llama/Llama-3-70b-chat-hf
 | `authHeader` | — | For `api: "anthropic"`: `"x-api-key"` (default) or `"bearer"` |
 | `headers` | — | Extra HTTP headers sent with every request |
 
+API keys and custom headers require HTTPS, except for `localhost`, `127.0.0.1`, and `[::1]` over HTTP. Requests carrying them do not follow redirects. This applies to model discovery and generation, including a custom `modelsAPI` URL.
+
 ## More examples
 
 <AccordionGroup>
