@@ -810,6 +810,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
 
   const totalTokens = { input: 0, output: 0, cacheRead: 0 };
   let turns = 0;
+  let chatExitCode = EXIT_OK;
   let aborted = false;
   let turnAbort = new AbortController();
 
@@ -910,6 +911,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       showProgress,
       emit,
     });
+    if (turn.exitCode !== EXIT_OK) chatExitCode = turn.exitCode;
 
     // Even partial output is valuable — save it
     if (turn.output) {
@@ -919,6 +921,15 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
         role: "assistant",
         content: turn.output,
         timestamp: Date.now(),
+      });
+    }
+    if (turn.error) {
+      chatHistory.push({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: `Turn failed: ${turn.error}`,
+        timestamp: Date.now(),
+        showInChat: true,
       });
     }
 
@@ -966,7 +977,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     if (turn.error) break;
   }
 
-  await cleanupAndExit(aborted ? EXIT_ABORT : EXIT_OK);
+  await cleanupAndExit(aborted ? EXIT_ABORT : chatExitCode);
 }
 function getWorkerInfo(): { intelligence: string; io: string } | null {
   try {

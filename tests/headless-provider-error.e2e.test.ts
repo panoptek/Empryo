@@ -1,8 +1,9 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SessionManager } from "../src/core/sessions/manager.js";
 
 test("headless CLI reports provider stream errors and exits nonzero", async () => {
 	const root = mkdtempSync(join(tmpdir(), "headless-provider-error-"));
@@ -51,6 +52,35 @@ test("headless CLI reports provider stream errors and exits nonzero", async () =
 		expect(exitCode).toBe(1);
 		expect(JSON.parse(stdout).error).toMatch(/redirect/i);
 		expect(paths).toEqual(["/v1/messages"]);
+
+		const chat = Bun.spawn([
+			process.execPath, fileURLToPath(new URL("../src/boot.tsx", import.meta.url)),
+			"--headless", "--chat", "--cwd", project, "--model", "wire/claude-opus-4-8",
+			"--json", "--no-repomap", "--max-steps", "2", "--timeout", "15000",
+		], {
+			cwd: project,
+			env: {
+				...process.env, HOME: home, WIRE_TEST_KEY: "synthetic-not-secret",
+				SOULFORGE_NO_REPOMAP: "1", SOULFORGE_NO_PROMPT: "1", NO_COLOR: "1",
+			},
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		chat.stdin.write("Say OK\n");
+		chat.stdin.end();
+		const [chatOutput, , chatExitCode] = await Promise.all([
+			new Response(chat.stdout).text(), new Response(chat.stderr).text(), chat.exited,
+		]);
+		expect(chatExitCode).toBe(1);
+		expect(JSON.parse(chatOutput.trim()).error).toMatch(/redirect/i);
+		expect(paths).toEqual(["/v1/messages", "/v1/messages"]);
+		const sessionId = readdirSync(join(project, ".soulforge", "sessions"))[0];
+		expect(sessionId).toBeDefined();
+		const saved = new SessionManager(project).loadSessionMessages(sessionId!);
+		expect(saved?.messages.at(-1)).toEqual(expect.objectContaining({
+			role: "system", showInChat: true, content: expect.stringMatching(/redirect/i),
+		}));
 	} finally {
 		server.stop(true);
 		rmSync(root, { recursive: true, force: true });
