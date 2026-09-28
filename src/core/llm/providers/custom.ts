@@ -1,9 +1,16 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { getProviderApiKey } from "../../secrets.js";
-import { buildOpenAICompatReasoningBody, createSessionFetchWrapper } from "./reasoning-fetch.js";
+import {
+  buildOpenAICompatReasoningBody,
+  createSessionFetchWrapper,
+  type ReasoningFetchFn,
+} from "./reasoning-fetch.js";
 import type {
   CustomProviderConfig,
   CustomReasoningConfig,
+  MaxTokensParam,
   ProviderDefinition,
   ProviderModelInfo,
 } from "./types.js";
@@ -70,10 +77,43 @@ function buildReasoningBody(reasoning?: CustomReasoningConfig): Record<string, u
   });
 }
 
+const OPENAI_REASONING_MODEL = /^(o\d|gpt-5)/i;
+
+/** Resolve which output-token field a chat/completions request should carry. */
+export function resolveMaxTokensParam(
+  modelId: string,
+  setting: MaxTokensParam = "auto",
+): "max_tokens" | "max_completion_tokens" {
+  if (setting !== "auto") return setting;
+  const base = modelId.slice(modelId.lastIndexOf("/") + 1);
+  return OPENAI_REASONING_MODEL.test(base) ? "max_completion_tokens" : "max_tokens";
+}
+
+/** Rename `max_tokens` → `max_completion_tokens` in JSON request bodies.
+ *  OpenAI reasoning models reject `max_tokens` on chat/completions. */
+function withMaxCompletionTokens(baseFetch: ReasoningFetchFn = fetch): ReasoningFetchFn {
+  return async (input, init): Promise<Response> => {
+    if (typeof init?.body !== "string") return baseFetch(input, init);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(init.body) as Record<string, unknown>;
+    } catch {
+      return baseFetch(input, init);
+    }
+    if (!("max_tokens" in parsed)) return baseFetch(input, init);
+    const { max_tokens, ...rest } = parsed;
+    const body = { ...rest, max_completion_tokens: rest.max_completion_tokens ?? max_tokens };
+    return baseFetch(input, { ...init, body: JSON.stringify(body) });
+  };
+}
+
 export function buildCustomProvider(config: CustomProviderConfig): ProviderDefinition {
   const envVar = config.envVar ?? "";
-  const reasoningBody = buildReasoningBody(config.reasoning);
-  const reasoningFetch = createSessionFetchWrapper(reasoningBody);
+  const api = config.api ?? "openai-compatible";
+  const reasoningBody =
+    api === "openai-compatible"
+      ? buildReasoningBody(config.reasoning)
+      : { ...config.reasoning?.extraParams };
 
   return {
     id: config.id,
@@ -83,14 +123,42 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
     asciiIcon: "◇",
     custom: true,
     customReasoning: config.reasoning,
+    customAPI: api,
 
     createModel(modelId: string) {
       const apiKey = envVar ? (getProviderApiKey(envVar) ?? "") : "custom";
+      const headers = config.headers;
+
+      if (api === "anthropic") {
+        const auth = config.authHeader === "bearer" ? { authToken: apiKey } : { apiKey };
+        return createAnthropic({
+          baseURL: config.baseURL,
+          ...auth,
+          headers,
+          fetch: createSessionFetchWrapper(reasoningBody) as typeof fetch,
+        })(modelId);
+      }
+
+      if (api === "openai-responses") {
+        return createOpenAI({
+          baseURL: config.baseURL,
+          apiKey,
+          headers,
+          fetch: createSessionFetchWrapper(reasoningBody) as typeof fetch,
+        }).responses(modelId);
+      }
+
+      const renameMaxTokens =
+        resolveMaxTokensParam(modelId, config.maxTokensParam) === "max_completion_tokens";
       const client = createOpenAICompatible({
         name: config.id,
         baseURL: config.baseURL,
         apiKey,
-        ...(reasoningFetch ? { fetch: reasoningFetch as typeof fetch } : {}),
+        headers,
+        fetch: createSessionFetchWrapper(
+          reasoningBody,
+          renameMaxTokens ? withMaxCompletionTokens() : fetch,
+        ) as typeof fetch,
       });
       return client.chatModel(modelId);
     },
@@ -100,8 +168,15 @@ export function buildCustomProvider(config: CustomProviderConfig): ProviderDefin
       if (!modelsUrl) return null;
 
       const apiKey = envVar ? (getProviderApiKey(envVar) ?? "") : "";
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const headers: Record<string, string> = {
+        ...config.headers,
+        "Content-Type": "application/json",
+      };
+      if (api === "anthropic") headers["anthropic-version"] = "2023-06-01";
+      if (apiKey) {
+        if (api === "anthropic" && config.authHeader !== "bearer") headers["x-api-key"] = apiKey;
+        else headers.Authorization = `Bearer ${apiKey}`;
+      }
 
       let res: Response;
       try {

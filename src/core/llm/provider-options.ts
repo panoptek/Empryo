@@ -375,6 +375,11 @@ function getProviderConstraints(providerId: string): ProviderConstraints {
   // Vercel Gateway with Claude models gets Anthropic-level support
   if (providerId === "vercel_gateway") return PROVIDER_CONSTRAINTS.anthropic as ProviderConstraints;
 
+  // Custom providers on a native wire API get that SDK's provider options.
+  const customAPI = getProvider(providerId)?.customAPI;
+  if (customAPI === "anthropic") return ANTHROPIC_FULL;
+  if (customAPI === "openai-responses") return OPENAI_FULL;
+
   return NO_SUPPORT;
 }
 

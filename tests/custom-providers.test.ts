@@ -1125,3 +1125,139 @@ describe("buildCustomProvider reasoning config", () => {
 		expect(body.reasoning).toEqual({ effort: "high" });
 	});
 });
+
+describe("custom provider wire API", () => {
+	const seen: { path: string; auth: string | null; xApiKey: string | null; body: Record<string, unknown> }[] = [];
+	let server: ReturnType<typeof Bun.serve>;
+	let baseURL: string;
+
+	beforeEach(() => {
+		seen.length = 0;
+		process.env.WIRE_TEST_KEY = "sk-wire";
+		server = Bun.serve({
+			port: 0,
+			async fetch(req) {
+				const path = new URL(req.url).pathname;
+				seen.push({
+					path,
+					auth: req.headers.get("authorization"),
+					xApiKey: req.headers.get("x-api-key"),
+					body: (await req.json()) as Record<string, unknown>,
+				});
+				if (path.endsWith("/messages")) {
+					return Response.json({
+						id: "m", type: "message", role: "assistant", model: "x",
+						content: [{ type: "text", text: "ok" }], stop_reason: "end_turn",
+						usage: { input_tokens: 1, output_tokens: 1 },
+					});
+				}
+				return Response.json({
+					id: "c", object: "chat.completion", created: 0, model: "x",
+					choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+					usage: { prompt_tokens: 1, completion_tokens: 1 },
+				});
+			},
+		});
+		baseURL = `http://localhost:${server.port}/v1`;
+	});
+
+	afterEach(() => {
+		server.stop(true);
+		delete process.env.WIRE_TEST_KEY;
+	});
+
+	async function call(cfg: Partial<CustomProviderConfig>, modelId: string) {
+		const { generateText } = await import("ai");
+		const { getEphemeralCache } = await import("../src/core/llm/provider-options.js");
+		const def = buildCustomProvider({ id: "wire", baseURL, envVar: "WIRE_TEST_KEY", ...cfg });
+		await generateText({
+			model: def.createModel(modelId),
+			maxOutputTokens: 64,
+			system: { role: "system", content: "sys", providerOptions: getEphemeralCache() },
+			prompt: "hi",
+		});
+		return seen[seen.length - 1]!;
+	}
+
+	test("reasoning OpenAI models send max_completion_tokens", async () => {
+		const req = await call({}, "openai/gpt-5");
+		expect(req.path).toBe("/v1/chat/completions");
+		expect(req.body.max_completion_tokens).toBe(64);
+		expect(req.body.max_tokens).toBeUndefined();
+	});
+
+	test("non-reasoning models keep max_tokens by default", async () => {
+		const req = await call({}, "gpt-4o");
+		expect(req.body.max_tokens).toBe(64);
+		expect(req.body.max_completion_tokens).toBeUndefined();
+	});
+
+	test("maxTokensParam forces the field name", async () => {
+		expect((await call({ maxTokensParam: "max_completion_tokens" }, "llama-3")).body.max_completion_tokens).toBe(64);
+		expect((await call({ maxTokensParam: "max_tokens" }, "gpt-5")).body.max_tokens).toBe(64);
+	});
+
+	test("api: anthropic posts to /messages with cache_control and x-api-key", async () => {
+		const req = await call({ api: "anthropic" }, "claude-opus-4-8");
+		expect(req.path).toBe("/v1/messages");
+		expect(req.xApiKey).toBe("sk-wire");
+		expect(req.auth).toBeNull();
+		expect(req.body.system).toEqual([
+			{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "5m" } },
+		]);
+	});
+
+	test("anthropic model discovery honors authHeader", async () => {
+		const got: { auth: string | null; xApiKey: string | null; version: string | null }[] = [];
+		const s = Bun.serve({
+			port: 0,
+			fetch(req) {
+				got.push({
+					auth: req.headers.get("authorization"),
+					xApiKey: req.headers.get("x-api-key"),
+					version: req.headers.get("anthropic-version"),
+				});
+				return Response.json({ data: [{ id: "claude-x" }] });
+			},
+		});
+		const url = `http://localhost:${s.port}/v1`;
+		const base = { id: "a", baseURL: url, envVar: "WIRE_TEST_KEY", api: "anthropic" as const };
+		expect(await buildCustomProvider(base).fetchModels()).toEqual([{ id: "claude-x", name: "claude-x" }]);
+		await buildCustomProvider({ ...base, authHeader: "bearer" }).fetchModels();
+		s.stop(true);
+		expect(got[0]).toEqual({ auth: null, xApiKey: "sk-wire", version: "2023-06-01" });
+		expect(got[1]).toEqual({ auth: "Bearer sk-wire", xApiKey: null, version: "2023-06-01" });
+	});
+
+	test("api: anthropic with authHeader bearer", async () => {
+		const req = await call({ api: "anthropic", authHeader: "bearer" }, "claude-opus-4-8");
+		expect(req.auth).toBe("Bearer sk-wire");
+		expect(req.xApiKey).toBeNull();
+	});
+
+	test("api: openai-responses posts to /responses", async () => {
+		await call({ api: "openai-responses" }, "gpt-5").catch(() => {});
+		expect(seen[0]!.path).toBe("/v1/responses");
+		expect(seen[0]!.body.max_output_tokens).toBe(64);
+	});
+
+	test("custom headers are forwarded", async () => {
+		let team: string | null = null;
+		const s = Bun.serve({
+			port: 0,
+			fetch(req) {
+				team = req.headers.get("x-team");
+				return new Response("{}", { status: 500 });
+			},
+		});
+		const def = buildCustomProvider({
+			id: "h",
+			baseURL: `http://localhost:${s.port}/v1`,
+			headers: { "x-team": "core" },
+		});
+		const { generateText } = await import("ai");
+		await generateText({ model: def.createModel("m"), prompt: "hi", maxRetries: 0 }).catch(() => {});
+		s.stop(true);
+		expect(team).toBe("core");
+	});
+});

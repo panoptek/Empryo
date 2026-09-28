@@ -60,7 +60,20 @@ export interface ProviderDefinition {
   /** Reasoning/thinking config for custom providers.
    *  Injected into every request body as OpenAI-style, DashScope-style, or raw params. */
   customReasoning?: CustomReasoningConfig;
+  /** Wire API a custom provider speaks. Undefined for built-ins. */
+  customAPI?: CustomProviderAPI;
 }
+
+/** Wire protocol spoken by a custom provider endpoint.
+ *  - "openai-compatible": POST {baseURL}/chat/completions (default)
+ *  - "anthropic":         POST {baseURL}/messages (Anthropic Messages API, prompt caching)
+ *  - "openai-responses":  POST {baseURL}/responses (OpenAI Responses API) */
+export type CustomProviderAPI = "openai-compatible" | "anthropic" | "openai-responses";
+
+/** Name of the output-token limit field on chat/completions requests.
+ *  "auto" sends `max_completion_tokens` for OpenAI reasoning models (o1/o3/o4/gpt-5)
+ *  and `max_tokens` for everything else. */
+export type MaxTokensParam = "auto" | "max_tokens" | "max_completion_tokens";
 
 export interface CustomProviderConfig {
   id: string;
@@ -72,4 +85,12 @@ export interface CustomProviderConfig {
   /** Reasoning/thinking configuration for this provider.
    *  Enables thinking control for models that support it via OpenAI-compatible APIs. */
   reasoning?: CustomReasoningConfig;
+  /** Wire API to use. Defaults to "openai-compatible". */
+  api?: CustomProviderAPI;
+  /** Output-token limit field for "openai-compatible" requests. Defaults to "auto". */
+  maxTokensParam?: MaxTokensParam;
+  /** Auth header for the "anthropic" API: "x-api-key" (default) or "bearer" (Authorization: Bearer). */
+  authHeader?: "x-api-key" | "bearer";
+  /** Extra HTTP headers sent with every request. */
+  headers?: Record<string, string>;
 }

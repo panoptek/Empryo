@@ -42,6 +42,10 @@ soulforge --model together/meta-llama/Llama-3-70b-chat-hf
 | `models` | — | Fallback model list (strings or `{id, name, contextWindow}`) |
 | `modelsAPI` | — | URL returning OpenAI `/v1/models` format |
 | `reasoning` | — | Thinking/reasoning config (see below) |
+| `api` | — | Wire API: `"openai-compatible"` (default, `/chat/completions`), `"anthropic"` (`/messages`), `"openai-responses"` (`/responses`) |
+| `maxTokensParam` | — | `"auto"` (default), `"max_tokens"` or `"max_completion_tokens"`. Auto sends `max_completion_tokens` for o1/o3/o4/gpt-5 models |
+| `authHeader` | — | For `api: "anthropic"`: `"x-api-key"` (default) or `"bearer"` |
+| `headers` | — | Extra HTTP headers sent with every request |
 
 ## More examples
 
@@ -68,6 +72,43 @@ soulforge --model together/meta-llama/Llama-3-70b-chat-hf
       "baseURL": "https://llm.internal.corp.com/v1",
       "envVar": "CORP_LLM_KEY",
       "modelsAPI": "https://llm.internal.corp.com/v1/models"
+    }]
+  }
+  ```
+</Accordion>
+
+<Accordion title="Anthropic-compatible endpoint">
+  Any server that implements the Anthropic Messages API (`POST {baseURL}/messages`) works with
+  `api: "anthropic"`. Requests carry Anthropic prompt-caching breakpoints and native thinking/effort options.
+
+  ```json
+  {
+    "providers": [{
+      "id": "my-anthropic",
+      "name": "My Anthropic-compatible API",
+      "baseURL": "https://api.example.com/v1",
+      "envVar": "MY_API_KEY",
+      "api": "anthropic"
+    }]
+  }
+  ```
+
+  Add `"authHeader": "bearer"` if the server expects `Authorization: Bearer` instead of `x-api-key`.
+  One host that serves several wire APIs can be registered once per API with different `id`s.
+</Accordion>
+
+<Accordion title="Reasoning models on /chat/completions">
+  OpenAI reasoning models reject `max_tokens`. With the default `maxTokensParam: "auto"`, models whose id
+  starts with `o1`/`o3`/`o4`/`gpt-5` get `max_completion_tokens`. Set it explicitly when your server
+  uses different model names:
+
+  ```json
+  {
+    "providers": [{
+      "id": "my-openai",
+      "baseURL": "https://api.example.com/v1",
+      "envVar": "MY_API_KEY",
+      "maxTokensParam": "max_completion_tokens"
     }]
   }
   ```
