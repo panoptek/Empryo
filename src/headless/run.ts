@@ -387,6 +387,16 @@ async function streamTurn(
             summary,
           });
         }
+      } else if (part.type === "error") {
+        error = signal.aborted
+          ? "Aborted"
+          : part.error instanceof Error
+            ? part.error.message
+            : String(part.error);
+        exitCode = signal.aborted ? EXIT_ABORT : EXIT_ERROR;
+        if (reporting.showProgress) stderrError(error);
+        if (reporting.events) emit({ type: "error", error });
+        break;
       } else if (part.type === "finish-step") {
         steps++;
         const usage = part.usage as {
